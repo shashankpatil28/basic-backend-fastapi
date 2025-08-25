@@ -46,11 +46,15 @@ async def create_ip_record(complete_data: CompleteArtisanData):
     # --------------------------------------------------------------------------
     print("\n=========================================================")
     print("Received JSON data from IP agent:")
-    print(complete_data.model_dump_json(indent=2))  # pretty print
+    # Use .dict() or .json() to convert the Pydantic model to a dictionary/JSON string
+    # We use .model_dump_json(indent=2) for a pretty-printed output
+    print(complete_data.model_dump_json(indent=2))
     print("=========================================================\n")
 
     # --------------------------------------------------------------------------
-    # 3. Dummy Response (10+ lines)
+    # 3. Dummy Response
+    #    This is a dummy response simulating a successful backend process.
+    #    It contains 10+ lines as requested.
     # --------------------------------------------------------------------------
     response_data = {
         "status": "success",
@@ -58,8 +62,8 @@ async def create_ip_record(complete_data: CompleteArtisanData):
         "transaction_id": "tx_20250825_123456789",
         "timestamp": "2025-08-25T11:10:00Z",
         "details": {
-            "product_id": complete_data.product[0].id if complete_data.product else None,
-            "artisan_id": complete_data.artisan[0].id if complete_data.artisan else None,
+            "product_id": complete_data.product[0].id,
+            "artisan_id": complete_data.artisan[0].id,
             "verification_eta": "48 hours",
             "next_steps": [
                 "A dedicated IP specialist will review your submission.",
@@ -76,6 +80,6 @@ async def create_ip_record(complete_data: CompleteArtisanData):
 # 4. Entry point for running the application
 # ==============================================================================
 if __name__ == "__main__":
-    # To run: python main.py
-    # Visit http://localhost:8001 or http://localhost:8001/docs
+    # To run, execute this script and navigate to http://localhost:8001
+    # You can access the FastAPI documentation at http://localhost:8001/docs
     uvicorn.run(app, host="0.0.0.0", port=8001)
