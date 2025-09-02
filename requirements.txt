@@ -16,3 +16,9 @@ python-dotenv
 qrcode[pil]
 pydantic[email]
 PyJWT
+fastapi 
+uvicorn 
+sqlalchemy 
+asyncpg 
+PyJWT 
+python-dotenv

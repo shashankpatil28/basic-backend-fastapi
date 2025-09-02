@@ -18,5 +18,25 @@
             }
         },
         "timestamp": "2025-09-02T17:56:09.423935Z"
+    },
+    {
+        "public_id": "CID-00002",
+        "private_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJwdWJsaWNfaWQiOiJDSUQtMDAwMDIiLCJleHAiOjE3ODgzNzE5MzZ9.MVFXsWss_b15s-22_8Wz0Y_krjwAeKTYEQ_Z0i6egz0",
+        "public_hash": "6fc443e15d6209e32cb7b7ce2d6ac082037696b0403a1b1b10707a1f79f56833",
+        "original_onboarding_data": {
+            "artisan": {
+                "name": "Rajesh Kumar",
+                "location": "Jaipur, Rajasthan",
+                "contact_number": "+919876543210",
+                "email": "rajesh.kumar@email.com",
+                "aadhaar_number": "123456789012"
+            },
+            "art": {
+                "name": "Blue asdasd Vase",
+                "description": "A handcrafted vase wasdasdasith intricate floral patterns, made using traditional blue pottery techniques. The glaze features vibrant cobalt blue and green colors.",
+                "photo": "iVBORw0KGgoAAAANSUhEUgAABAAAAAIAAQMAAAABxH95AAAAA1BMVEUAAADu9w/NAAAAS0lEQVR4nO3BMQEAAADCoPz/guxjAYgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPgPBAAFAAE4rE4nAAAAAElFTkSuQmCC"
+            }
+        },
+        "timestamp": "2025-09-02T17:58:56.483786Z"
     }
 ]

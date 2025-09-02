@@ -1,16 +1,28 @@
 # app/main.py
+import os
+import json
+import hashlib
+from datetime import datetime, timedelta
+import ssl
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, EmailStr
-import uvicorn
-from datetime import datetime, timedelta
-import hashlib
-import jwt
-import json
-import os
 
+import jwt  # from PyJWT
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.pool import NullPool
+from sqlalchemy.dialects.postgresql import JSONB  # (used for types in notes)
+
+from dotenv import load_dotenv
+
+load_dotenv()
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False  # Neon already verifies certs
+ssl_context.verify_mode = ssl.CERT_REQUIRED
 
 # ==============================================================================
-# 1. Pydantic Models for Prototype Schema
+# 1. Pydantic Models (unchanged)
 # ==============================================================================
 class Artisan(BaseModel):
     name: str
@@ -29,85 +41,142 @@ class OnboardingData(BaseModel):
     art: Art
 
 # ==============================================================================
-# 2. DB 
+# 2. Config
 # ==============================================================================
-DATABASE_FILE = "craftid_db.json"
-SECRET_KEY = "shashankpatil2811"  # Use env variable in production
+SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
 ALGORITHM = "HS256"
 
-def get_db():
-    if not os.path.exists(DATABASE_FILE):
-        with open(DATABASE_FILE, "w") as f:
-            json.dump([], f)
-    with open(DATABASE_FILE, "r") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return []
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set")
 
-def save_db(data):
-    with open(DATABASE_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+
+# Serverless-friendly: do not hold connections between invocations
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=True,
+    connect_args={"ssl": ssl_context},  # Neon requires SSL
+    pool_pre_ping=True,
+)
+SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 # ==============================================================================
-# 3. FastAPI Application
+# 3. FastAPI app
 # ==============================================================================
 app = FastAPI(title="Master-IP Prototype Service", version="0.1.0")
 
+# Run once per cold start: create table/sequence/indexes if missing
+DDL_INIT = """
+CREATE TABLE IF NOT EXISTS craftids (
+    id BIGSERIAL PRIMARY KEY,
+    public_id TEXT UNIQUE NOT NULL,
+    private_key TEXT NOT NULL,
+    public_hash TEXT NOT NULL,
+    original_onboarding_data JSONB NOT NULL,
+    artisan_name TEXT NOT NULL,
+    artisan_location TEXT NOT NULL,
+    artisan_contact_number TEXT NOT NULL,
+    artisan_email TEXT NOT NULL,
+    artisan_aadhaar_number TEXT NOT NULL,
+    art_name TEXT NOT NULL,
+    art_description TEXT NOT NULL,
+    art_photo TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Sequence for human-friendly public_id numbers (separate from internal id)
+CREATE SEQUENCE IF NOT EXISTS craftid_public_seq START WITH 1 INCREMENT BY 1;
+
+-- Case-insensitive uniqueness on art_name
+CREATE UNIQUE INDEX IF NOT EXISTS idx_craftids_art_name_lower
+    ON craftids ((lower(art_name)));
+
+-- Helpful index for verification by hash
+CREATE INDEX IF NOT EXISTS idx_craftids_public_hash
+    ON craftids (public_hash);
+"""
+
+@app.on_event("startup")
+async def on_startup():
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql(DDL_INIT)
+
 @app.get("/health")
-def health():
+async def health():
     return {"status": "ok"}
 
 @app.get("/")
-def root():
+async def root():
     return {"message": "Prototype Master-IP backend is running!"}
 
 # ==============================================================================
-# 4. POST Endpoint (/create)
+# 4. POST /create  (now async + Postgres)
 # ==============================================================================
 @app.post("/create")
-def create_craftid(data: OnboardingData):
-    db = get_db()
-
-    # Step 1: Check for uniqueness
-    for entry in db:
-        try:
-            existing_art_name = entry["original_onboarding_data"]["art"]["name"]
-            if existing_art_name.lower() == data.art.name.lower():
+async def create_craftid(data: OnboardingData):
+    async with SessionLocal() as session:
+        async with session.begin():
+            # Uniqueness: case-insensitive art name
+            check = await session.execute(
+                text("SELECT 1 FROM craftids WHERE lower(art_name) = lower(:nm) LIMIT 1"),
+                {"nm": data.art.name},
+            )
+            if check.scalar() is not None:
                 raise HTTPException(
                     status_code=409,
                     detail="A similar product name already exists. Please provide a more unique name."
                 )
-        except KeyError:
-            # If old entries don’t follow the new structure, skip them
-            continue
 
-    # Step 2: Generate IDs and Hashes
-    public_id = f"CID-{len(db) + 1:05d}"
+            # Public ID via sequence
+            nextval = await session.execute(text("SELECT nextval('craftid_public_seq')"))
+            n = int(nextval.scalar_one())
+            public_id = f"CID-{n:05d}"
 
-    # Create a JWT token as the private key
-    payload = {"public_id": public_id, "exp": datetime.utcnow() + timedelta(days=365)}
-    private_key = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+            # JWT as private key
+            payload = {"public_id": public_id, "exp": datetime.utcnow() + timedelta(days=365)}
+            private_key = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+            if isinstance(private_key, bytes):
+                private_key = private_key.decode()
 
-    # Generate a public hash
-    public_hash = hashlib.sha256(
-        (data.art.name + data.art.description + data.art.photo).encode()
-    ).hexdigest()
+            # Public hash
+            public_hash = hashlib.sha256(
+                (data.art.name + data.art.description + data.art.photo).encode()
+            ).hexdigest()
 
-    # Step 3: Prepare and Store the new CraftID
-    new_craftid = {
-        "public_id": public_id,
-        "private_key": private_key,
-        "public_hash": public_hash,
-        "original_onboarding_data": data.dict(),
-        "timestamp": datetime.utcnow().isoformat() + "Z"
-    }
-    db.append(new_craftid)
-    save_db(db)
+            # Insert row
+            await session.execute(
+                text("""
+                    INSERT INTO craftids (
+                        public_id, private_key, public_hash, original_onboarding_data,
+                        artisan_name, artisan_location, artisan_contact_number, artisan_email, artisan_aadhaar_number,
+                        art_name, art_description, art_photo
+                    )
+                    VALUES (
+                        :public_id, :private_key, :public_hash, :onboarding::jsonb,
+                        :artisan_name, :artisan_location, :artisan_contact_number, :artisan_email, :artisan_aadhaar_number,
+                        :art_name, :art_description, :art_photo
+                    )
+                """),
+                {
+                    "public_id": public_id,
+                    "private_key": private_key,
+                    "public_hash": public_hash,
+                    # Cast to JSONB in SQL; we pass serialized JSON string
+                    "onboarding": json.dumps(data.dict()),
+                    "artisan_name": data.artisan.name,
+                    "artisan_location": data.artisan.location,
+                    "artisan_contact_number": data.artisan.contact_number,
+                    "artisan_email": str(data.artisan.email),
+                    "artisan_aadhaar_number": data.artisan.aadhaar_number,
+                    "art_name": data.art.name,
+                    "art_description": data.art.description,
+                    "art_photo": data.art.photo,
+                }
+            )
 
-    # Step 4: Construct the response
+    # Build response
     transaction_id = "tx_" + datetime.utcnow().strftime("%Y%m%d%H%M%S")
-
     response_data = {
         "status": "success",
         "message": f"Your CraftID for '{data.art.name}' has been created successfully.",
@@ -117,8 +186,8 @@ def create_craftid(data: OnboardingData):
             "public_id": public_id,
             "private_key": private_key,
             "public_hash": public_hash,
-            "verification_url": f"http://localhost:8001/verify/{public_id}",
-            "qr_code_link": f"http://localhost:8001/verify/qr/{public_id}"
+            "verification_url": f"{API_BASE_URL}/verify/{public_id}",
+            "qr_code_link": f"{API_BASE_URL}/verify/qr/{public_id}"
         },
         "artisan_info": {
             "name": data.artisan.name,
@@ -130,14 +199,13 @@ def create_craftid(data: OnboardingData):
         },
         "original_onboarding_data": data.dict(),
         "links": {
-            "track_status": f"http://localhost:8001/status/{transaction_id}",
-            "shop_listing": f"http://localhost:8001/shop/{public_id}"
+            "track_status": f"{API_BASE_URL}/status/{transaction_id}",
+            "shop_listing": f"{API_BASE_URL}/shop/{public_id}"
         }
     }
     return response_data
 
-# ==============================================================================
-# 5. Entry Point
-# ==============================================================================
+# Local dev entrypoint only
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
