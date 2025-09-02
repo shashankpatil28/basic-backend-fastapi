@@ -8,6 +8,7 @@ import jwt
 import json
 import os
 
+
 # ==============================================================================
 # 1. Pydantic Models for Prototype Schema
 # ==============================================================================
@@ -70,11 +71,16 @@ def create_craftid(data: OnboardingData):
 
     # Step 1: Check for uniqueness
     for entry in db:
-        if entry["art_info"]["name"].lower() == data.art.name.lower():
-            raise HTTPException(
-                status_code=409,
-                detail="A similar product name already exists. Please provide a more unique name."
-            )
+        try:
+            existing_art_name = entry["original_onboarding_data"]["art"]["name"]
+            if existing_art_name.lower() == data.art.name.lower():
+                raise HTTPException(
+                    status_code=409,
+                    detail="A similar product name already exists. Please provide a more unique name."
+                )
+        except KeyError:
+            # If old entries don’t follow the new structure, skip them
+            continue
 
     # Step 2: Generate IDs and Hashes
     public_id = f"CID-{len(db) + 1:05d}"

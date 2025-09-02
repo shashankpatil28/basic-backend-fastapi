@@ -14,6 +14,5 @@ python-dotenv
 
 # QR code generation
 qrcode[pil]
-jwt
 pydantic[email]
 PyJWT

@@ -1,0 +1,22 @@
+[
+    {
+        "public_id": "CID-00001",
+        "private_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJwdWJsaWNfaWQiOiJDSUQtMDAwMDEiLCJleHAiOjE3ODgzNzE3Njl9.e-WRd5zrCpL6OHCwzxHGUSyLAIL9UFImut1u90Zlqpk",
+        "public_hash": "03d2782d19f15e1156b823c1a0b326aefc53707e0e10fb4939dd5ff1f99ea03e",
+        "original_onboarding_data": {
+            "artisan": {
+                "name": "Rajesh Kumar",
+                "location": "Jaipur, Rajasthan",
+                "contact_number": "+919876543210",
+                "email": "rajesh.kumar@email.com",
+                "aadhaar_number": "123456789012"
+            },
+            "art": {
+                "name": "Blue Pottery Vase",
+                "description": "A handcrafted vase with intricate floral patterns, made using traditional blue pottery techniques. The glaze features vibrant cobalt blue and green colors.",
+                "photo": "iVBORw0KGgoAAAANSUhEUgAABAAAAAIAAQMAAAABxH95AAAAA1BMVEUAAADu9w/NAAAAS0lEQVR4nO3BMQEAAADCoPz/guxjAYgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPgPBAAFAAE4rE4nAAAAAElFTkSuQmCC"
+            }
+        },
+        "timestamp": "2025-09-02T17:56:09.423935Z"
+    }
+]
