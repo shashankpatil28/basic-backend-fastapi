@@ -2,6 +2,7 @@
 import os
 from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes.craftid import router as craftid_router
 from app.routes.products import router as products_router
@@ -12,6 +13,17 @@ from app.mongodb import ensure_initialized, close as mongo_close
 load_dotenv()
 
 app = FastAPI(title="Master-IP Prototype Service", version="0.1.0")
+
+# CORS: allow your frontend (and add others here as needed)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:4200"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # include routers
 app.include_router(craftid_router)
