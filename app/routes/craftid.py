@@ -1,10 +1,10 @@
 # app/routes/craftid.py
 import os
 import hashlib
-import jwt
+import jwt, asyncio
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException
-from app.mongodb import MongoDB
+from app.mongodb import MongoDB, ensure_initialized, collection, next_sequence
 from app.models import OnboardingData
 from pymongo import ReturnDocument  # for counters if needed
 
@@ -14,31 +14,36 @@ ALGORITHM = "HS256"
 
 @router.post("/create")
 async def create_craftid(data: OnboardingData):
-    coll = MongoDB.collection("craftids")
+    try:
+        await ensure_initialized()
+    except Exception as e:
+        # 502 indicates upstream dependency (DB) failed
+        raise HTTPException(status_code=502, detail=f"DB init error: {str(e)}")
+
+    coll = collection("craftids")
 
     # Normalized art name for uniqueness (simple approach)
     art_name_norm = data.art.name.strip().lower()
+    try:
+        existing = await asyncio.wait_for(coll.find_one({"art_name_norm": art_name_norm}), timeout=4)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="DB read timed out")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB read error: {e}")
 
-    # Check uniqueness (fast because of index art_name_norm)
-    existing = await coll.find_one({"art_name_norm": art_name_norm})
     if existing:
-        raise HTTPException(
-            status_code=409,
-            detail="A similar product name already exists. Please provide a more unique name."
-        )
+        raise HTTPException(status_code=409, detail="A similar product name already exists.")
 
-    # Generate atomic sequential public id
-    seq = await MongoDB.next_sequence("craftid_seq")
+    # get atomic sequence
+    try:
+        seq = await asyncio.wait_for(next_sequence("craftid_seq"), timeout=4)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to allocate public id: {e}")
+
     public_id = f"CID-{seq:05d}"
-
-    # create private key (JWT)
     payload = {"public_id": public_id, "exp": datetime.utcnow() + timedelta(days=365)}
     private_key = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
-    # public hash
-    public_hash = hashlib.sha256(
-        (data.art.name + data.art.description + data.art.photo).encode()
-    ).hexdigest()
+    public_hash = hashlib.sha256((data.art.name + data.art.description + data.art.photo).encode()).hexdigest()
 
     doc = {
         "public_id": public_id,
@@ -49,7 +54,7 @@ async def create_craftid(data: OnboardingData):
         "timestamp": datetime.utcnow().isoformat() + "Z"
     }
 
-    result = await coll.insert_one(doc)
+    await coll.insert_one(doc)
 
     transaction_id = "tx_" + datetime.utcnow().strftime("%Y%m%d%H%M%S")
 

@@ -1,52 +1,89 @@
 # app/mongodb.py
 import os
-from motor.motor_asyncio import AsyncIOMotorClient
+import asyncio
 from typing import Optional
+from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
+from pymongo.errors import ServerSelectionTimeoutError
 
 MONGO_URI = os.getenv("MONGO_URI")
-DB_NAME   = os.getenv("DB_NAME", "masterip_db")
+DB_NAME = os.getenv("DB_NAME", "masterip_db")
 
-class MongoDB:
-    client: Optional[AsyncIOMotorClient] = None
-    db = None
+# Global client/db objects (may be reused across warm invocations)
+_client: Optional[AsyncIOMotorClient] = None
+_db = None
 
-    @classmethod
-    def init(cls, uri: str, db_name: str):
-        # AsyncIOMotorClient is created synchronously, but you can await ops (like create_index)
-        cls.client = AsyncIOMotorClient(uri)
-        cls.db = cls.client[db_name]
+def _make_client():
+    # serverSelectionTimeoutMS ensures we fail fast if DB is unreachable
+    return AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=3000)
 
-    @classmethod
-    async def create_indexes(cls):
-        # craftids collection indexes:
-        coll = cls.collection("craftids")
-        # unique public_id
-        await coll.create_index([("public_id", 1)], unique=True)
-        # normalized art name for case-insensitive uniqueness check
-        await coll.create_index([("art_name_norm", 1)], unique=True)
-        # optional: index on public_hash for fast lookup
-        await coll.create_index([("public_hash", 1)], unique=False)
+async def ensure_initialized():
+    """
+    Ensure global _client and _db are initialized.
+    Safe to call from endpoint handlers in serverless env.
+    """
+    global _client, _db
 
-    @classmethod
-    def collection(cls, name: str):
-        if cls.db is None:
-            raise RuntimeError("Database not initialized")
-        return cls.db[name]
+    if _db is not None:
+        return
 
-    @classmethod
-    async def next_sequence(cls, name: str) -> int:
-        # atomic counter for sequential public IDs (like CID-00001)
-        counters = cls.collection("counters")
-        doc = await counters.find_one_and_update(
-            {"_id": name},
-            {"$inc": {"seq": 1}},
-            upsert=True,
-            return_document=ReturnDocument.AFTER
-        )
-        return int(doc["seq"])
+    if not MONGO_URI:
+        raise RuntimeError("MONGO_URI not set in environment")
 
-    @classmethod
-    def close(cls):
-        if cls.client:
-            cls.client.close()
+    # create client (non-awaitable), then try a quick ping to verify connectivity
+    try:
+        if _client is None:
+            _client = _make_client()
+            # small delay to let client init; optional
+            await asyncio.sleep(0)
+        # quick ping to confirm server reachable
+        await _client.admin.command("ping")
+        _db = _client[DB_NAME]
+    except ServerSelectionTimeoutError as e:
+        # close client on failure to avoid dangling resources
+        try:
+            _client.close()
+        except Exception:
+            pass
+        _client = None
+        raise RuntimeError(f"Cannot connect to MongoDB (timeout). Check MONGO_URI and network. {e}") from e
+    except Exception as e:
+        # any other errors
+        try:
+            _client.close()
+        except Exception:
+            pass
+        _client = None
+        raise RuntimeError(f"MongoDB init error: {e}") from e
+
+def collection(name: str):
+    """
+    Return a collection object. Must call ensure_initialized() before this in async code.
+    """
+    if _db is None:
+        raise RuntimeError("Database not initialized")
+    return _db[name]
+
+async def next_sequence(name: str) -> int:
+    """
+    Atomic counter using a counters collection. Make sure init was called.
+    """
+    if _db is None:
+        raise RuntimeError("Database not initialized")
+    counters = _db["counters"]
+    doc = await counters.find_one_and_update(
+        {"_id": name},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER
+    )
+    return int(doc["seq"])
+
+def close():
+    global _client, _db
+    try:
+        if _client:
+            _client.close()
+    finally:
+        _client = None
+        _db = None
