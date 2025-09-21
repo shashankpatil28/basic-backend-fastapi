@@ -1,6 +1,5 @@
 # app/routes/products.py
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 from typing import List
 import os
 import hashlib
@@ -8,117 +7,85 @@ import jwt
 from datetime import datetime, timedelta
 import asyncio
 
-# reuse existing Pydantic models if present; fallback declarations otherwise
-try:
-    from app.models import OnboardingData, Artisan, Art
-except Exception:
-    # fallback (keeps file standalone if needed)
-    from pydantic import EmailStr
-    class Artisan(BaseModel):
-        name: str
-        location: str
-        contact_number: str
-        email: EmailStr
-        aadhaar_number: str
-
-    class Art(BaseModel):
-        name: str
-        description: str
-        photo: str
-
-    class OnboardingData(BaseModel):
-        artisan: Artisan
-        art: Art
-
-from app.mongodb import ensure_initialized, collection, next_sequence
+from app.models import OnboardingData
+from app.mongodb import ensure_initialized, collection, next_sequence, close as mongo_close
 
 router = APIRouter()
 SECRET_KEY = os.getenv("SECRET_KEY", "change_in_prod")
 ALGORITHM = "HS256"
 
-# Response shape for frontend compatibility
-class VerificationData(BaseModel):
-    public_id: str
-    public_hash: str
-    verification_url: str
 
-class ArtisanInfo(BaseModel):
-    name: str
-    location: str
-
-class ArtInfo(BaseModel):
-    name: str
-    description: str
-    photo: str
-
-class ProductOut(BaseModel):
-    artisan_info: ArtisanInfo
-    art_info: ArtInfo
-    verification: VerificationData
-    timestamp: str
-
-# -----------------------
-# POST /add-product
-# Creates a CraftID entry (if not present) and returns the product payload
-# -----------------------
-@router.post("/add-product", response_model=ProductOut)
-async def add_product(data: OnboardingData):
-    # ensure DB initialized (serverless-friendly)
+async def ensure_db_ready_or_502():
     try:
         await ensure_initialized()
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"DB init error: {e}")
+        try:
+            mongo_close()
+            await ensure_initialized()
+        except Exception as e2:
+            raise HTTPException(status_code=502, detail=f"DB init error: {e}; retry failed: {e2}")
+
+
+@router.post("/add-product")
+async def add_product(data: OnboardingData):
+    # ensure DB ready
+    await ensure_db_ready_or_502()
 
     craftids = collection("craftids")
-
-    # normalize art name for uniqueness check
     art_name_norm = data.art.name.strip().lower()
 
-    # quick uniqueness check (avoid duplicate product names)
     try:
         existing = await asyncio.wait_for(craftids.find_one({"art_name_norm": art_name_norm}), timeout=4)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="DB read timed out")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB read error: {e}")
+        # recovery attempt
+        try:
+            mongo_close()
+            await ensure_db_ready_or_502()
+            craftids = collection("craftids")
+            existing = await asyncio.wait_for(craftids.find_one({"art_name_norm": art_name_norm}), timeout=4)
+        except Exception as e2:
+            raise HTTPException(status_code=500, detail=f"DB read error: {e}; recovery: {e2}")
 
     if existing:
-        # If product already exists, return its public fields (idempotent behavior)
         public_id = existing.get("public_id")
         public_hash = existing.get("public_hash")
         verification_url = f"/verify/{public_id}"
-        return ProductOut(
-            artisan_info=ArtisanInfo(
-                name=existing["original_onboarding_data"]["artisan"]["name"],
-                location=existing["original_onboarding_data"]["artisan"]["location"]
-            ),
-            art_info=ArtInfo(
-                name=existing["original_onboarding_data"]["art"]["name"],
-                description=existing["original_onboarding_data"]["art"]["description"],
-                photo=existing["original_onboarding_data"]["art"].get("photo", "")
-            ),
-            verification=VerificationData(
-                public_id=public_id,
-                public_hash=public_hash,
-                verification_url=verification_url
-            ),
-            timestamp=existing.get("timestamp")
-        )
+        return {
+            "artisan_info": {
+                "name": existing["original_onboarding_data"]["artisan"]["name"],
+                "location": existing["original_onboarding_data"]["artisan"]["location"]
+            },
+            "art_info": {
+                "name": existing["original_onboarding_data"]["art"]["name"],
+                "description": existing["original_onboarding_data"]["art"]["description"],
+                "photo": existing["original_onboarding_data"]["art"].get("photo", "")
+            },
+            "verification": {
+                "public_id": public_id,
+                "public_hash": public_hash,
+                "verification_url": verification_url
+            },
+            "timestamp": existing.get("timestamp")
+        }
 
-    # allocate atomic sequence for public_id
+    # allocate seq
     try:
         seq = await asyncio.wait_for(next_sequence("craftid_seq"), timeout=4)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to allocate public id: {e}")
+        # recovery attempt
+        try:
+            mongo_close()
+            await ensure_db_ready_or_502()
+            seq = await asyncio.wait_for(next_sequence("craftid_seq"), timeout=4)
+        except Exception as e2:
+            raise HTTPException(status_code=502, detail=f"Failed to allocate public id: {e}; recovery: {e2}")
 
     public_id = f"CID-{seq:05d}"
-
     payload = {"public_id": public_id, "exp": datetime.utcnow() + timedelta(days=365)}
     private_key = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
-    public_hash = hashlib.sha256(
-        (data.art.name + data.art.description + data.art.photo).encode()
-    ).hexdigest()
+    public_hash = hashlib.sha256((data.art.name + data.art.description + data.art.photo).encode()).hexdigest()
 
     doc = {
         "public_id": public_id,
@@ -132,35 +99,42 @@ async def add_product(data: OnboardingData):
     try:
         await craftids.insert_one(doc)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB insert error: {e}")
+        # recovery retry
+        try:
+            mongo_close()
+            await ensure_db_ready_or_502()
+            craftids = collection("craftids")
+            await craftids.insert_one(doc)
+        except Exception as e2:
+            raise HTTPException(status_code=500, detail=f"DB insert error: {e}; recovery: {e2}")
 
     verification_url = f"/verify/{public_id}"
+    return {
+        "artisan_info": {"name": data.artisan.name, "location": data.artisan.location},
+        "art_info": {"name": data.art.name, "description": data.art.description, "photo": data.art.photo},
+        "verification": {"public_id": public_id, "public_hash": public_hash, "verification_url": verification_url},
+        "timestamp": doc["timestamp"]
+    }
 
-    return ProductOut(
-        artisan_info=ArtisanInfo(name=data.artisan.name, location=data.artisan.location),
-        art_info=ArtInfo(name=data.art.name, description=data.art.description, photo=data.art.photo),
-        verification=VerificationData(public_id=public_id, public_hash=public_hash, verification_url=verification_url),
-        timestamp=doc["timestamp"]
-    )
 
-# -----------------------
-# GET /get-products
-# Returns an array of products (maps craftids collection to frontend shape)
-# -----------------------
-@router.get("/get-products", response_model=List[ProductOut])
+@router.get("/get-products")
 async def get_products():
-    try:
-        await ensure_initialized()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"DB init error: {e}")
+    await ensure_db_ready_or_502()
 
     craftids = collection("craftids")
-
     try:
         cursor = craftids.find().sort("timestamp", -1)
-        docs = await cursor.to_list(length=200)  # limit to 200 results by default
+        docs = await cursor.to_list(length=200)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB read error: {e}")
+        # recovery attempt
+        try:
+            mongo_close()
+            await ensure_db_ready_or_502()
+            craftids = collection("craftids")
+            cursor = craftids.find().sort("timestamp", -1)
+            docs = await cursor.to_list(length=200)
+        except Exception as e2:
+            raise HTTPException(status_code=500, detail=f"DB read error: {e}; recovery: {e2}")
 
     out = []
     for d in docs:
@@ -171,22 +145,11 @@ async def get_products():
         public_hash = d.get("public_hash")
         verification_url = f"/verify/{public_id}" if public_id else ""
 
-        out.append(ProductOut(
-            artisan_info=ArtisanInfo(
-                name=artisan.get("name", ""),
-                location=artisan.get("location", "")
-            ),
-            art_info=ArtInfo(
-                name=art.get("name", ""),
-                description=art.get("description", ""),
-                photo=art.get("photo", "")
-            ),
-            verification=VerificationData(
-                public_id=public_id or "",
-                public_hash=public_hash or "",
-                verification_url=verification_url
-            ),
-            timestamp=d.get("timestamp", "")
-        ))
+        out.append({
+            "artisan_info": {"name": artisan.get("name", ""), "location": artisan.get("location", "")},
+            "art_info": {"name": art.get("name", ""), "description": art.get("description", ""), "photo": art.get("photo", "")},
+            "verification": {"public_id": public_id or "", "public_hash": public_hash or "", "verification_url": verification_url},
+            "timestamp": d.get("timestamp", "")
+        })
 
     return out
