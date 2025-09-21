@@ -21,4 +21,5 @@ uvicorn
 sqlalchemy 
 asyncpg 
 PyJWT 
-python-dotenv
+python-dotenv 
+motor 
