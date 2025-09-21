@@ -4,7 +4,7 @@ import hashlib
 import jwt, asyncio
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException
-from app.mongodb import MongoDB, ensure_initialized, collection, next_sequence
+from app.mongodb import ensure_initialized, collection, next_sequence
 from app.models import OnboardingData
 from pymongo import ReturnDocument  # for counters if needed
 
