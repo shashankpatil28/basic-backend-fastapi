@@ -18,7 +18,9 @@ app = FastAPI(title="Master-IP Prototype Service", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:4200"
+        "http://localhost:4200",
+        "https://kalakari-ai-solution-shop-production.up.railway.app",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
