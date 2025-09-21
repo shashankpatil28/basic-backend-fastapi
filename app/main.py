@@ -13,6 +13,9 @@ except Exception:
     create_indexes = None
 
 from app.routes.craftid import router as craftid_router
+from app.routes.products import router as products_router
+
+
 
 load_dotenv()
 
@@ -20,7 +23,7 @@ app = FastAPI(title="Master-IP Prototype Service", version="0.1.0")
 
 # include your main API routes
 app.include_router(craftid_router)
-
+app.include_router(products_router)
 
 @app.get("/")
 async def root():
